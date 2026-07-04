@@ -1,0 +1,65 @@
+name: Build Public PBIX Corpus Any PR
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-corpus:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Discover, download and verify 100 published PBIX files
+        run: |
+          python3 - <<'PY'
+          import csv, hashlib, json, pathlib, re, urllib.parse, urllib.request
+          owner, repo, ref = 'microsoft', 'powerbi-desktop-samples', 'main'
+          target, min_size, max_size = 100, 100_000, 50_000_000
+          out = pathlib.Path('corpus'); out.mkdir(exist_ok=True)
+          headers = {'Accept':'application/vnd.github+json','User-Agent':'pbix2html-corpus/1.0','X-GitHub-Api-Version':'2022-11-28'}
+          url = f'https://api.github.com/repos/{owner}/{repo}/git/trees/{ref}?recursive=1'
+          with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=60) as r: tree=json.load(r)
+          if tree.get('truncated'): raise SystemExit('recursive tree truncated')
+          candidates=[]
+          for x in tree.get('tree',[]):
+              p=x.get('path',''); s=int(x.get('size') or 0)
+              if x.get('type')=='blob' and p.lower().endswith('.pbix') and min_size <= s <= max_size:
+                  candidates.append({'path':p,'size':s,'git_blob_sha':x.get('sha')})
+          candidates.sort(key=lambda x:(x['size'],x['path'].lower()))
+          if len(candidates)<target: raise SystemExit(f'Only {len(candidates)} qualifying PBIX files found')
+          def safe(n): return (re.sub(r'[^A-Za-z0-9._-]+','_',n).strip('._')[:140] or 'sample.pbix')
+          manifest=[]
+          for i,x in enumerate(candidates[:target],1):
+              ep=urllib.parse.quote(x['path'],safe='/')
+              raw=f'https://raw.githubusercontent.com/{owner}/{repo}/{ref}/{ep}'
+              fn=f"{i:03d}__{safe(pathlib.PurePosixPath(x['path']).name)}"; dest=out/fn
+              print(f"[{i:03d}/{target}] {x['path']} ({x['size']} bytes)",flush=True)
+              h=hashlib.sha256(); total=0
+              with urllib.request.urlopen(urllib.request.Request(raw,headers={'User-Agent':'pbix2html-corpus/1.0'}),timeout=180) as r, dest.open('wb') as f:
+                  while True:
+                      b=r.read(1024*1024)
+                      if not b: break
+                      f.write(b); h.update(b); total += len(b)
+                      if total>max_size: raise RuntimeError('download exceeded max size')
+              if total != x['size']: raise RuntimeError(f"size mismatch: {x['path']}")
+              sig=dest.read_bytes()[:4]
+              manifest.append({'index':i,'local_file':fn,'repository':f'{owner}/{repo}','ref':ref,'path':x['path'],'source_url':raw,'size':total,'git_blob_sha':x['git_blob_sha'],'sha256':h.hexdigest(),'zip_like':sig.startswith(b'PK')})
+          (out/'manifest.json').write_text(json.dumps(manifest,indent=2),encoding='utf-8')
+          with (out/'manifest.csv').open('w',newline='',encoding='utf-8') as f:
+              w=csv.DictWriter(f,fieldnames=list(manifest[0])); w.writeheader(); w.writerows(manifest)
+          summary={'source_repository':f'{owner}/{repo}','source_ref':ref,'candidate_count':len(candidates),'selected_count':len(manifest),'selection_rule':'100 smallest PBIX blobs between 100KB and 50MB','total_bytes':sum(x['size'] for x in manifest),'zip_like_count':sum(1 for x in manifest if x['zip_like'])}
+          (out/'corpus-summary.json').write_text(json.dumps(summary,indent=2),encoding='utf-8')
+          for x in manifest:
+              p=out/x['local_file']; assert hashlib.sha256(p.read_bytes()).hexdigest()==x['sha256']
+          print(json.dumps(summary,indent=2)); print('Verified 100/100 files')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pbix-public-corpus-100
+          path: corpus/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
