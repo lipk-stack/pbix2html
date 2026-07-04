@@ -1,0 +1,248 @@
+{
+  "irVersion": "0.1.0",
+  "source": {
+    "originalFormat": "structured-fixture",
+    "adapterId": "fixture-loader",
+    "storageMode": "import",
+    "ingestedAt": "2026-07-04T00:00:00.000Z"
+  },
+  "reportName": "Sales Executive Summary",
+  "semanticModel": {
+    "tables": [
+      {
+        "name": "Date",
+        "isDateTable": true,
+        "columns": [
+          { "name": "DateKey", "dataType": "number" },
+          { "name": "Year", "dataType": "number" }
+        ]
+      },
+      {
+        "name": "Product",
+        "columns": [
+          { "name": "ProductKey", "dataType": "number" },
+          { "name": "Category", "dataType": "string" }
+        ]
+      },
+      {
+        "name": "Sales",
+        "columns": [
+          { "name": "SalesKey", "dataType": "number" },
+          { "name": "DateKey", "dataType": "number" },
+          { "name": "ProductKey", "dataType": "number" },
+          { "name": "Amount", "dataType": "number" },
+          { "name": "Qty", "dataType": "number" }
+        ]
+      }
+    ],
+    "relationships": [
+      {
+        "id": "rel-date-sales",
+        "fromTable": "Date",
+        "fromColumn": "DateKey",
+        "toTable": "Sales",
+        "toColumn": "DateKey",
+        "crossFilterDirection": "single",
+        "isActive": true,
+        "cardinality": "oneToMany"
+      },
+      {
+        "id": "rel-product-sales",
+        "fromTable": "Product",
+        "fromColumn": "ProductKey",
+        "toTable": "Sales",
+        "toColumn": "ProductKey",
+        "crossFilterDirection": "single",
+        "isActive": true,
+        "cardinality": "oneToMany"
+      }
+    ],
+    "measures": [
+      {
+        "name": "Revenue",
+        "table": "Sales",
+        "formatString": "$#,0",
+        "expression": {
+          "kind": "aggregation",
+          "fn": "SUM",
+          "column": { "table": "Sales", "column": "Amount" }
+        }
+      },
+      {
+        "name": "Quantity",
+        "table": "Sales",
+        "expression": {
+          "kind": "aggregation",
+          "fn": "SUM",
+          "column": { "table": "Sales", "column": "Qty" }
+        }
+      },
+      {
+        "name": "Average Selling Price",
+        "table": "Sales",
+        "formatString": "$#,0.00",
+        "expression": {
+          "kind": "divide",
+          "numerator": { "kind": "measureRef", "measure": "Revenue" },
+          "denominator": { "kind": "measureRef", "measure": "Quantity" },
+          "alternateResult": 0
+        }
+      }
+    ]
+  },
+  "data": {
+    "snapshotTimestamp": "2026-07-04T00:00:00.000Z",
+    "tables": [
+      {
+        "table": "Date",
+        "rows": [
+          { "DateKey": 1, "Year": 2022 },
+          { "DateKey": 2, "Year": 2023 },
+          { "DateKey": 3, "Year": 2024 }
+        ]
+      },
+      {
+        "table": "Product",
+        "rows": [
+          { "ProductKey": 1, "Category": "Bikes" },
+          { "ProductKey": 2, "Category": "Accessories" },
+          { "ProductKey": 3, "Category": "Clothing" },
+          { "ProductKey": 4, "Category": "Components" }
+        ]
+      },
+      {
+        "table": "Sales",
+        "rows": [
+          { "SalesKey": 1, "DateKey": 1, "ProductKey": 1, "Amount": 120000, "Qty": 80 },
+          { "SalesKey": 2, "DateKey": 1, "ProductKey": 2, "Amount": 18000, "Qty": 300 },
+          { "SalesKey": 3, "DateKey": 1, "ProductKey": 3, "Amount": 22000, "Qty": 400 },
+          { "SalesKey": 4, "DateKey": 1, "ProductKey": 4, "Amount": 45000, "Qty": 150 },
+          { "SalesKey": 5, "DateKey": 2, "ProductKey": 1, "Amount": 150000, "Qty": 95 },
+          { "SalesKey": 6, "DateKey": 2, "ProductKey": 2, "Amount": 21000, "Qty": 340 },
+          { "SalesKey": 7, "DateKey": 2, "ProductKey": 3, "Amount": 26000, "Qty": 430 },
+          { "SalesKey": 8, "DateKey": 2, "ProductKey": 4, "Amount": 52000, "Qty": 170 },
+          { "SalesKey": 9, "DateKey": 3, "ProductKey": 1, "Amount": 175000, "Qty": 110 },
+          { "SalesKey": 10, "DateKey": 3, "ProductKey": 2, "Amount": 25000, "Qty": 380 },
+          { "SalesKey": 11, "DateKey": 3, "ProductKey": 3, "Amount": 31000, "Qty": 470 },
+          { "SalesKey": 12, "DateKey": 3, "ProductKey": 4, "Amount": 61000, "Qty": 200 }
+        ]
+      }
+    ]
+  },
+  "pages": [
+    {
+      "id": "page-executive-summary",
+      "name": "ExecutiveSummary",
+      "displayName": "Executive Summary",
+      "width": 1280,
+      "height": 720,
+      "visibility": "visible",
+      "filters": [],
+      "visuals": [
+        {
+          "id": "card-total-revenue",
+          "sourceType": "fixture-card",
+          "normalizedType": "card",
+          "bounds": { "x": 40, "y": 40, "width": 280, "height": 130 },
+          "zIndex": 0,
+          "bindings": { "values": [{ "measure": "Revenue" }] },
+          "format": { "title": "Total Revenue", "showTitle": true, "numberFormat": "$#,0" },
+          "filters": [],
+          "interactions": [],
+          "fidelity": "EXACT"
+        },
+        {
+          "id": "card-avg-selling-price",
+          "sourceType": "fixture-card",
+          "normalizedType": "card",
+          "bounds": { "x": 360, "y": 40, "width": 280, "height": 130 },
+          "zIndex": 0,
+          "bindings": { "values": [{ "measure": "Average Selling Price" }] },
+          "format": { "title": "Average Selling Price", "showTitle": true, "numberFormat": "$#,0.00" },
+          "filters": [],
+          "interactions": [],
+          "fidelity": "EXACT"
+        },
+        {
+          "id": "bar-revenue-by-category",
+          "sourceType": "fixture-bar-chart",
+          "normalizedType": "barChart",
+          "bounds": { "x": 40, "y": 210, "width": 560, "height": 260 },
+          "zIndex": 0,
+          "bindings": {
+            "category": [{ "table": "Product", "column": "Category" }],
+            "values": [{ "measure": "Revenue" }]
+          },
+          "format": { "title": "Revenue by Category", "showTitle": true, "numberFormat": "$#,0" },
+          "filters": [],
+          "interactions": [
+            { "targetVisualId": "card-total-revenue", "mode": "filter" },
+            { "targetVisualId": "card-avg-selling-price", "mode": "filter" }
+          ],
+          "fidelity": "EXACT"
+        },
+        {
+          "id": "slicer-year",
+          "sourceType": "fixture-slicer",
+          "normalizedType": "slicer",
+          "bounds": { "x": 680, "y": 40, "width": 220, "height": 220 },
+          "zIndex": 0,
+          "bindings": {},
+          "format": { "title": "Year", "showTitle": true },
+          "filters": [],
+          "interactions": [],
+          "fidelity": "EXACT",
+          "slicerField": { "table": "Date", "column": "Year" }
+        }
+      ]
+    }
+  ],
+  "interactions": {
+    "edges": [
+      { "sourceVisualId": "bar-revenue-by-category", "targetVisualId": "card-total-revenue", "mode": "filter" },
+      { "sourceVisualId": "bar-revenue-by-category", "targetVisualId": "card-avg-selling-price", "mode": "filter" }
+    ]
+  },
+  "compatibility": {
+    "overallFidelity": "EXACT",
+    "items": [
+      { "objectId": "Revenue", "objectType": "measure", "status": "EXACT" },
+      { "objectId": "Quantity", "objectType": "measure", "status": "EXACT" },
+      { "objectId": "Average Selling Price", "objectType": "measure", "status": "EXACT" },
+      { "objectId": "card-total-revenue", "objectType": "visual", "status": "EXACT" },
+      { "objectId": "card-avg-selling-price", "objectType": "visual", "status": "EXACT" },
+      { "objectId": "bar-revenue-by-category", "objectType": "visual", "status": "EXACT" },
+      { "objectId": "slicer-year", "objectType": "visual", "status": "EXACT" }
+    ]
+  },
+  "provenance": [
+    {
+      "targetObjectId": "card-total-revenue",
+      "transformationPasses": ["structured-fixture-ingestion"],
+      "translatorVersion": "0.1.0",
+      "fidelity": "EXACT",
+      "warnings": []
+    },
+    {
+      "targetObjectId": "card-avg-selling-price",
+      "transformationPasses": ["structured-fixture-ingestion"],
+      "translatorVersion": "0.1.0",
+      "fidelity": "EXACT",
+      "warnings": []
+    },
+    {
+      "targetObjectId": "bar-revenue-by-category",
+      "transformationPasses": ["structured-fixture-ingestion"],
+      "translatorVersion": "0.1.0",
+      "fidelity": "EXACT",
+      "warnings": []
+    },
+    {
+      "targetObjectId": "slicer-year",
+      "transformationPasses": ["structured-fixture-ingestion"],
+      "translatorVersion": "0.1.0",
+      "fidelity": "EXACT",
+      "warnings": []
+    }
+  ]
+}
