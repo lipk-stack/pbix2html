@@ -1,0 +1,96 @@
+name: Build Public PBIX Supplement
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  supplement:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Discover supplemental public PBIX files
+        run: |
+          mkdir -p supplement
+          python3 - <<'PY' 2>&1 | tee supplement/builder.log
+          import csv, hashlib, json, pathlib, re, time, urllib.parse, urllib.request, urllib.error
+          TARGET=40; MIN_SIZE=10_000; MAX_SIZE=75_000_000
+          OUT=pathlib.Path('supplement')
+          HEADERS={'Accept':'application/vnd.github+json','User-Agent':'pbix2html-supplement/1.0','X-GitHub-Api-Version':'2022-11-28'}
+          manifest=[]; events=[]; seen_blob=set(); seen_hash=set(); seen_repos=set()
+          def get_json(url, timeout=90):
+              with urllib.request.urlopen(urllib.request.Request(url,headers=HEADERS),timeout=timeout) as r: return json.load(r)
+          def safe(n): return (re.sub(r'[^A-Za-z0-9._-]+','_',n).strip('._')[:140] or 'sample.pbix')
+          queries=[
+            'power-bi-dashboard in:name,description,readme',
+            'powerbi-dashboard in:name,description,readme',
+            '"Power BI" analytics dashboard in:name,description,readme',
+            'business-intelligence powerbi in:name,description,readme',
+            'powerbi portfolio in:name,description,readme'
+          ]
+          repos=[]
+          for q in queries:
+              url='https://api.github.com/search/repositories?'+urllib.parse.urlencode({'q':q,'sort':'updated','order':'desc','per_page':100})
+              try: data=get_json(url)
+              except Exception as e: events.append({'stage':'search','query':q,'error':f'{type(e).__name__}: {e}'}); continue
+              for item in data.get('items',[]):
+                  full=item.get('full_name'); branch=item.get('default_branch') or 'main'
+                  if isinstance(full,str) and full not in seen_repos and not item.get('fork'):
+                      seen_repos.add(full); repos.append((full,branch))
+              time.sleep(2)
+          print(f'repositories={len(repos)}',flush=True)
+          tree_requests=0
+          for full,branch in repos:
+              if len(manifest)>=TARGET or tree_requests>=55: break
+              owner,repo=full.split('/',1); tree_requests+=1
+              url=f"https://api.github.com/repos/{owner}/{repo}/git/trees/{urllib.parse.quote(branch,safe='')}?recursive=1"
+              try: tree=get_json(url)
+              except Exception as e: events.append({'stage':'tree','repository':full,'error':f'{type(e).__name__}: {e}'}); continue
+              candidates=[]
+              for node in tree.get('tree',[]):
+                  p=node.get('path',''); size=int(node.get('size') or 0); blob=node.get('sha')
+                  if node.get('type')=='blob' and p.lower().endswith('.pbix') and MIN_SIZE<=size<=MAX_SIZE and blob not in seen_blob:
+                      candidates.append({'path':p,'size':size,'blob':blob})
+              candidates.sort(key=lambda x:(x['size'],x['path'].lower()))
+              for c in candidates:
+                  if len(manifest)>=TARGET: break
+                  raw=f"https://raw.githubusercontent.com/{owner}/{repo}/{urllib.parse.quote(branch,safe='')}/{urllib.parse.quote(c['path'],safe='/')}"
+                  fn=f"{len(manifest)+1:03d}__{safe(pathlib.PurePosixPath(c['path']).name)}"; dest=OUT/fn
+                  try:
+                      h=hashlib.sha256(); total=0
+                      with urllib.request.urlopen(urllib.request.Request(raw,headers={'User-Agent':HEADERS['User-Agent']}),timeout=300) as r,dest.open('wb') as f:
+                          while True:
+                              b=r.read(1024*1024)
+                              if not b: break
+                              f.write(b);h.update(b);total+=len(b)
+                              if total>MAX_SIZE: raise RuntimeError('download exceeded max size')
+                      if total != c['size']: raise RuntimeError(f"size mismatch expected={c['size']} actual={total}")
+                      digest=h.hexdigest()
+                      if digest in seen_hash: dest.unlink(missing_ok=True); continue
+                      if total<MIN_SIZE: raise RuntimeError('possible LFS pointer')
+                      sig=dest.read_bytes()[:4]
+                      item={'index':len(manifest)+1,'local_file':fn,'repository':full,'ref':branch,'path':c['path'],'source_url':raw,'size':total,'git_blob_sha':c['blob'],'sha256':digest,'zip_like':sig.startswith(b'PK'),'source_class':'public-github-supplement'}
+                      manifest.append(item);seen_hash.add(digest);seen_blob.add(c['blob'])
+                      print(f"ACCEPT {len(manifest):03d}/{TARGET} {full}::{c['path']} ({total})",flush=True)
+                  except Exception as e:
+                      dest.unlink(missing_ok=True);events.append({'stage':'download','repository':full,'path':c['path'],'error':f'{type(e).__name__}: {e}'})
+          (OUT/'manifest.json').write_text(json.dumps(manifest,indent=2),encoding='utf-8')
+          if manifest:
+              with (OUT/'manifest.csv').open('w',newline='',encoding='utf-8') as f:
+                  w=csv.DictWriter(f,fieldnames=list(manifest[0]));w.writeheader();w.writerows(manifest)
+          summary={'target':TARGET,'selected_count':len(manifest),'distinct_sha256_count':len(seen_hash),'repository_candidates':len(repos),'tree_requests':tree_requests,'total_bytes':sum(x['size'] for x in manifest),'event_count':len(events)}
+          (OUT/'summary.json').write_text(json.dumps(summary,indent=2),encoding='utf-8');(OUT/'events.json').write_text(json.dumps(events,indent=2),encoding='utf-8')
+          print(json.dumps(summary,indent=2),flush=True)
+          PY
+      - name: Upload supplement
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pbix-public-supplement
+          path: supplement/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
