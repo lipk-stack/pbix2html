@@ -23,14 +23,14 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
-          parts = sorted(Path('.source-bundle').glob('hex-*.part'))
+          parts = sorted(Path('.source-bundle').glob('hex-[0-9][0-9][0-9].part'))
           if not parts:
               raise SystemExit('No hex source bundle parts found')
           text = ''.join(path.read_text(encoding='ascii') for path in parts)
           Path('/tmp/pbix2html-source.zip').write_bytes(bytes.fromhex(text))
           print(f'Reconstructed {len(parts)} parts')
           PY
-          echo "9526016b168e692079bd0063f31c2af3eec046bfd951aa8502f8fa7dbe1f637e  /tmp/pbix2html-source.zip" | sha256sum -c -
+          echo "fef9741320172928053d2daf178c710fa5eeccadbbbfba08a34e39673e71369f  /tmp/pbix2html-source.zip" | sha256sum -c -
           unzip -tq /tmp/pbix2html-source.zip
 
       - name: Replace placeholder tree with validated source
