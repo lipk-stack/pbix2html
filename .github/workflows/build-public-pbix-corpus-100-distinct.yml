@@ -1,0 +1,226 @@
+name: Build 100 Distinct Public PBIX Corpus
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-corpus:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build corpus and diagnostics
+        run: |
+          mkdir -p corpus
+          python3 - <<'PY' 2>&1 | tee corpus/builder.log
+          import csv, hashlib, json, pathlib, re, time, traceback, urllib.parse, urllib.request, urllib.error
+
+          TARGET = 100
+          MIN_SIZE = 10_000
+          MAX_SIZE = 75_000_000
+          OUT = pathlib.Path('corpus')
+          HEADERS = {
+              'Accept': 'application/vnd.github+json',
+              'User-Agent': 'pbix2html-public-corpus/2.0',
+              'X-GitHub-Api-Version': '2022-11-28',
+          }
+          manifest = []
+          events = []
+          seen_blob = set()
+          seen_sha256 = set()
+          candidate_count = 0
+
+          def get_json(url, timeout=90):
+              req = urllib.request.Request(url, headers=HEADERS)
+              with urllib.request.urlopen(req, timeout=timeout) as response:
+                  return json.load(response)
+
+          def safe_name(name):
+              value = re.sub(r'[^A-Za-z0-9._-]+', '_', name).strip('._')
+              return value[:140] or 'sample.pbix'
+
+          def raw_url(owner, repo, ref, path):
+              return f"https://raw.githubusercontent.com/{owner}/{repo}/{urllib.parse.quote(ref, safe='')}/{urllib.parse.quote(path, safe='/')}"
+
+          def try_download(candidate):
+              nonlocal_placeholder = None
+              blob = candidate.get('git_blob_sha')
+              if blob and blob in seen_blob:
+                  return False
+              url = candidate['source_url']
+              ordinal = len(manifest) + 1
+              file_name = f"{ordinal:03d}__{safe_name(pathlib.PurePosixPath(candidate['path']).name)}"
+              dest = OUT / file_name
+              for attempt in range(1, 4):
+                  try:
+                      h = hashlib.sha256(); total = 0
+                      req = urllib.request.Request(url, headers={'User-Agent': HEADERS['User-Agent']})
+                      with urllib.request.urlopen(req, timeout=300) as response, dest.open('wb') as fh:
+                          while True:
+                              chunk = response.read(1024 * 1024)
+                              if not chunk: break
+                              fh.write(chunk); h.update(chunk); total += len(chunk)
+                              if total > MAX_SIZE: raise RuntimeError('download exceeded max size')
+                      expected = int(candidate.get('size') or 0)
+                      if expected and total != expected:
+                          raise RuntimeError(f'size mismatch expected={expected} actual={total}')
+                      if total < MIN_SIZE:
+                          raise RuntimeError(f'file too small ({total} bytes), possible Git LFS pointer')
+                      digest = h.hexdigest()
+                      if digest in seen_sha256:
+                          dest.unlink(missing_ok=True)
+                          if blob: seen_blob.add(blob)
+                          return False
+                      signature = dest.read_bytes()[:4]
+                      item = {
+                          'index': ordinal,
+                          'local_file': file_name,
+                          'repository': candidate['repository'],
+                          'ref': candidate['ref'],
+                          'path': candidate['path'],
+                          'source_url': url,
+                          'size': total,
+                          'git_blob_sha': blob,
+                          'sha256': digest,
+                          'zip_like': signature.startswith(b'PK'),
+                          'source_class': candidate['source_class'],
+                      }
+                      manifest.append(item)
+                      seen_sha256.add(digest)
+                      if blob: seen_blob.add(blob)
+                      print(f"ACCEPT {ordinal:03d}/{TARGET} {candidate['repository']}::{candidate['path']} ({total} bytes)", flush=True)
+                      return True
+                  except Exception as exc:
+                      dest.unlink(missing_ok=True)
+                      events.append({'repository': candidate['repository'], 'path': candidate['path'], 'attempt': attempt, 'error': f'{type(exc).__name__}: {exc}'})
+                      time.sleep(attempt)
+              return False
+
+          def tree_candidates(owner, repo, ref, source_class, max_files=None):
+              global candidate_count
+              tree_url = f"https://api.github.com/repos/{owner}/{repo}/git/trees/{urllib.parse.quote(ref, safe='')}?recursive=1"
+              tree = get_json(tree_url)
+              if tree.get('truncated'):
+                  events.append({'repository': f'{owner}/{repo}', 'path': '', 'attempt': 0, 'error': 'recursive tree truncated'})
+              found = []
+              for node in tree.get('tree', []):
+                  path = node.get('path', ''); size = int(node.get('size') or 0)
+                  if node.get('type') == 'blob' and path.lower().endswith('.pbix') and MIN_SIZE <= size <= MAX_SIZE:
+                      found.append({
+                          'repository': f'{owner}/{repo}', 'ref': ref, 'path': path, 'size': size,
+                          'git_blob_sha': node.get('sha'), 'source_url': raw_url(owner, repo, ref, path), 'source_class': source_class
+                      })
+              found.sort(key=lambda x: (x['size'], x['path'].lower()))
+              candidate_count += len(found)
+              return found[:max_files] if max_files else found
+
+          fatal_error = None
+          try:
+              # Tier 1: official Microsoft Power BI Desktop samples.
+              for candidate in tree_candidates('microsoft', 'powerbi-desktop-samples', 'main', 'official-microsoft'):
+                  if len(manifest) >= TARGET: break
+                  try_download(candidate)
+
+              # Tier 2: additional public GitHub repositories returned by repository search.
+              queries = [
+                  'pbix powerbi in:name,description,readme',
+                  '"power bi" dashboard pbix in:name,description,readme',
+                  'powerbi projects pbix in:name,description,readme',
+              ]
+              repositories = []
+              seen_repos = {'microsoft/powerbi-desktop-samples'}
+              for query in queries:
+                  search_url = 'https://api.github.com/search/repositories?' + urllib.parse.urlencode({'q': query, 'sort': 'updated', 'order': 'desc', 'per_page': 100})
+                  try:
+                      payload = get_json(search_url)
+                  except Exception as exc:
+                      events.append({'repository': 'github-search', 'path': query, 'attempt': 1, 'error': f'{type(exc).__name__}: {exc}'})
+                      continue
+                  for repo_item in payload.get('items', []):
+                      full_name = repo_item.get('full_name')
+                      default_branch = repo_item.get('default_branch') or 'main'
+                      if isinstance(full_name, str) and full_name not in seen_repos and not repo_item.get('fork'):
+                          seen_repos.add(full_name)
+                          repositories.append((full_name, default_branch))
+                  time.sleep(2)
+
+              print(f'Candidate public repositories: {len(repositories)}', flush=True)
+              tree_requests = 0
+              for full_name, default_branch in repositories:
+                  if len(manifest) >= TARGET: break
+                  if tree_requests >= 55: break
+                  owner, repo = full_name.split('/', 1)
+                  try:
+                      candidates = tree_candidates(owner, repo, default_branch, 'public-github')
+                      tree_requests += 1
+                  except urllib.error.HTTPError as exc:
+                      tree_requests += 1
+                      events.append({'repository': full_name, 'path': '', 'attempt': 1, 'error': f'HTTPError: {exc.code} {exc.reason}'})
+                      if exc.code == 403:
+                          time.sleep(5)
+                      continue
+                  except Exception as exc:
+                      tree_requests += 1
+                      events.append({'repository': full_name, 'path': '', 'attempt': 1, 'error': f'{type(exc).__name__}: {exc}'})
+                      continue
+                  for candidate in candidates:
+                      if len(manifest) >= TARGET: break
+                      try_download(candidate)
+
+              if len(manifest) < TARGET:
+                  raise RuntimeError(f'Only {len(manifest)} distinct verified PBIX files acquired; need {TARGET}')
+          except Exception as exc:
+              fatal_error = f'{type(exc).__name__}: {exc}'
+              print(traceback.format_exc(), flush=True)
+
+          manifest = manifest[:TARGET]
+          for index, item in enumerate(manifest, 1): item['index'] = index
+          (OUT / 'manifest.json').write_text(json.dumps(manifest, indent=2), encoding='utf-8')
+          if manifest:
+              with (OUT / 'manifest.csv').open('w', newline='', encoding='utf-8') as fh:
+                  writer = csv.DictWriter(fh, fieldnames=list(manifest[0].keys())); writer.writeheader(); writer.writerows(manifest)
+          summary = {
+              'target': TARGET,
+              'selected_count': len(manifest),
+              'distinct_sha256_count': len({x['sha256'] for x in manifest}),
+              'total_bytes': sum(x['size'] for x in manifest),
+              'zip_like_count': sum(1 for x in manifest if x['zip_like']),
+              'candidate_count': candidate_count,
+              'official_microsoft_count': sum(1 for x in manifest if x['source_class'] == 'official-microsoft'),
+              'public_github_count': sum(1 for x in manifest if x['source_class'] == 'public-github'),
+              'event_count': len(events),
+              'fatal_error': fatal_error,
+          }
+          (OUT / 'corpus-summary.json').write_text(json.dumps(summary, indent=2), encoding='utf-8')
+          (OUT / 'events.json').write_text(json.dumps(events, indent=2), encoding='utf-8')
+          for item in manifest:
+              path = OUT / item['local_file']
+              if hashlib.sha256(path.read_bytes()).hexdigest() != item['sha256']:
+                  raise SystemExit(f'hash verification failed: {path}')
+          print(json.dumps(summary, indent=2), flush=True)
+          PY
+
+      - name: Upload corpus and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pbix-public-corpus-100-distinct
+          path: corpus/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+      - name: Enforce exact distinct corpus size
+        run: |
+          python3 - <<'PY'
+          import json, pathlib, sys
+          summary = json.loads(pathlib.Path('corpus/corpus-summary.json').read_text())
+          manifest = json.loads(pathlib.Path('corpus/manifest.json').read_text())
+          ok = summary.get('selected_count') == 100 and summary.get('distinct_sha256_count') == 100 and len(manifest) == 100
+          print(json.dumps(summary, indent=2))
+          if not ok: sys.exit(1)
+          PY
