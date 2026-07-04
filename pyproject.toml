@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pbix2html"
+version = "0.1.0"
+description = "Convert Power BI .pbix/.pbit report layouts to standalone HTML"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.9"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Topic :: Text Processing :: Markup :: HTML",
+]
+
+[project.scripts]
+pbix2html = "pbix2html.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["pbix2html*"]
