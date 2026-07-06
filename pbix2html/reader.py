@@ -7,6 +7,7 @@ parsed without executing report content or proprietary model binaries.
 from __future__ import annotations
 
 import json
+import re
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -61,7 +62,7 @@ class Page:
 
 @dataclass
 class Table:
-    """A table from the data model schema, when available."""
+    """A table from the data model schema, or a conservative binding skeleton."""
 
     name: str
     columns: list[str] = field(default_factory=list)
@@ -259,6 +260,52 @@ def _parse_tables(schema_text: str) -> list[Table]:
     return tables
 
 
+_WRAPPER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\((.*)\)$")
+
+
+def _binding_table_column(binding: str) -> tuple[str, str] | None:
+    """Conservatively recover ``Table.Column`` from a visual queryRef string.
+
+    This is metadata recovery only. It never invents rows, DAX expressions, or
+    measure results. Nested wrappers such as ``Sum(Sales.Amount)`` are unwrapped.
+    """
+    value = binding.split(": ", 1)[-1].strip()
+    for _ in range(8):
+        match = _WRAPPER_RE.fullmatch(value)
+        if not match:
+            break
+        value = match.group(1).strip()
+    if not value or value.lower() == "select" or "." not in value:
+        return None
+    table_name, column_name = value.split(".", 1)
+    table_name = table_name.strip().strip("'[]")
+    column_name = column_name.strip().strip("[]")
+    if not table_name or not column_name:
+        return None
+    return table_name, column_name
+
+
+def _augment_tables_from_bindings(tables: list[Table], pages: list[Page]) -> list[Table]:
+    """Merge a conservative semantic skeleton recovered from visual bindings."""
+    by_name = {table.name: table for table in tables}
+    order = [table.name for table in tables]
+    for page in pages:
+        for visual in page.visuals:
+            for binding in visual.fields:
+                parsed = _binding_table_column(binding)
+                if not parsed:
+                    continue
+                table_name, column_name = parsed
+                table = by_name.get(table_name)
+                if table is None:
+                    table = Table(name=table_name)
+                    by_name[table_name] = table
+                    order.append(table_name)
+                if column_name not in table.columns and column_name not in table.measures:
+                    table.columns.append(column_name)
+    return [by_name[name] for name in order]
+
+
 def read_pbix(source: Union[str, Path, BinaryIO]) -> PbixReport:
     """Read a .pbix or .pbit file and return its parsed report structure."""
     source_name = Path(str(source)).name if isinstance(source, (str, Path)) else "report.pbix"
@@ -307,6 +354,7 @@ def read_pbix(source: Union[str, Path, BinaryIO]) -> PbixReport:
             report.tables = _parse_tables(
                 _decode_text(_read_part(archive, SCHEMA_PART, MAX_SCHEMA_BYTES))
             )
+        report.tables = _augment_tables_from_bindings(report.tables, report.pages)
 
         report.static_resources = sorted(
             name[len(STATIC_RESOURCE_PREFIX) :]
