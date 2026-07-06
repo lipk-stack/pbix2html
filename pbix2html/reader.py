@@ -1,16 +1,7 @@
-"""Read the report layout and metadata out of a .pbix/.pbit archive.
+"""Read report layout and metadata from a .pbix/.pbit archive.
 
-A PBIX file is a ZIP archive. The parts this reader understands:
-
-- ``Version``            UTF-16 text, layout format version.
-- ``Report/Layout``      UTF-16 JSON describing pages ("sections") and the
-                         visuals placed on each page ("visualContainers").
-- ``DataModelSchema``    UTF-16 JSON model schema (present in .pbit templates;
-                         .pbix files instead carry a compressed ``DataModel``
-                         blob that is not parseable with the stdlib).
-- ``Report/StaticResources/...`` images and themes registered by the report.
-
-Everything here uses only the Python standard library.
+The reader intentionally handles only documented/structural ZIP parts that can be
+parsed without executing report content or proprietary model binaries.
 """
 
 from __future__ import annotations
@@ -26,9 +17,17 @@ VERSION_PART = "Version"
 SCHEMA_PART = "DataModelSchema"
 STATIC_RESOURCE_PREFIX = "Report/StaticResources/"
 
+# PBIX/PBIT input is untrusted. Keep decompression bounded before materialising
+# members in memory. These limits are intentionally generous for report metadata
+# while still preventing trivial ZIP-bomb exhaustion.
+MAX_ARCHIVE_MEMBERS = 50_000
+MAX_VERSION_BYTES = 1 * 1024 * 1024
+MAX_LAYOUT_BYTES = 64 * 1024 * 1024
+MAX_SCHEMA_BYTES = 64 * 1024 * 1024
+
 
 class PbixError(Exception):
-    """Raised when a file cannot be read as a PBIX/PBIT report."""
+    """Raised when a file cannot be safely read as a PBIX/PBIT report."""
 
 
 @dataclass
@@ -49,7 +48,7 @@ class Visual:
 
 @dataclass
 class Page:
-    """One report page (a "section" in the layout JSON)."""
+    """One report page (a section in the layout JSON)."""
 
     name: str
     display_name: str
@@ -62,7 +61,7 @@ class Page:
 
 @dataclass
 class Table:
-    """A table from the data model schema (available in .pbit files)."""
+    """A table from the data model schema, when available."""
 
     name: str
     columns: list[str] = field(default_factory=list)
@@ -84,12 +83,34 @@ class PbixReport:
         return sum(len(page.visuals) for page in self.pages)
 
 
+def _read_part(archive: zipfile.ZipFile, name: str, limit: int) -> bytes:
+    """Read one member with both declared-size and streamed-size limits."""
+    try:
+        info = archive.getinfo(name)
+    except KeyError as exc:
+        raise PbixError(f"Archive member is missing: {name}") from exc
+
+    if info.file_size > limit:
+        raise PbixError(
+            f"Archive member {name!r} is too large: {info.file_size} bytes "
+            f"(limit {limit} bytes)"
+        )
+
+    try:
+        with archive.open(info, "r") as member:
+            data = member.read(limit + 1)
+    except (OSError, RuntimeError, zipfile.BadZipFile, NotImplementedError) as exc:
+        raise PbixError(f"Could not safely read archive member {name!r}: {exc}") from exc
+
+    if len(data) > limit:
+        raise PbixError(f"Archive member {name!r} exceeds the {limit}-byte limit")
+    return data
+
+
 def _decode_text(data: bytes) -> str:
     """Decode a PBIX text part (UTF-16 with or without BOM, or UTF-8)."""
     if data.startswith((b"\xff\xfe", b"\xfe\xff")):
         return data.decode("utf-16")
-    # BOM-less UTF-16-LE ASCII text (the common PBIX case) has a NUL in
-    # every odd byte position; UTF-8 text never starts that way.
     if len(data) >= 2 and data[1] == 0:
         try:
             return data.decode("utf-16-le")
@@ -119,11 +140,12 @@ def _as_float(value: Any, default: float = 0.0) -> float:
 
 
 def _literal_text(expr: Any) -> str:
-    """Extract the text of a layout literal expression like ``'My title'``."""
+    """Extract text from a layout literal expression."""
     if not isinstance(expr, dict):
         return ""
-    literal = expr.get("expr", {}).get("Literal", {}) if isinstance(expr.get("expr"), dict) else {}
-    value = literal.get("Value", "")
+    expr_value = expr.get("expr")
+    literal = expr_value.get("Literal", {}) if isinstance(expr_value, dict) else {}
+    value = literal.get("Value", "") if isinstance(literal, dict) else ""
     if isinstance(value, str) and len(value) >= 2 and value[0] == value[-1] == "'":
         return value[1:-1]
     return str(value) if value else ""
@@ -180,10 +202,13 @@ def _parse_visual(container: dict) -> Visual:
     single_visual = config.get("singleVisual")
     if isinstance(single_visual, dict):
         visual.visual_type = str(single_visual.get("visualType") or "unknown")
-        visual.hidden = single_visual.get("display", {}).get("mode") == "hidden" if isinstance(single_visual.get("display"), dict) else False
+        display = single_visual.get("display")
+        visual.hidden = isinstance(display, dict) and display.get("mode") == "hidden"
         visual.fields = _visual_fields(single_visual)
         vc_objects = single_visual.get("vcObjects")
-        visual.title = _visual_title(single_visual, vc_objects if isinstance(vc_objects, dict) else {})
+        visual.title = _visual_title(
+            single_visual, vc_objects if isinstance(vc_objects, dict) else {}
+        )
     elif isinstance(config.get("singleVisualGroup"), dict):
         visual.visual_type = "visualGroup"
         visual.title = str(config["singleVisualGroup"].get("displayName", ""))
@@ -245,7 +270,13 @@ def read_pbix(source: Union[str, Path, BinaryIO]) -> PbixReport:
         raise PbixError(f"{source_name} is not a readable PBIX archive: {exc}") from exc
 
     with archive:
-        names = set(archive.namelist())
+        infos = archive.infolist()
+        if len(infos) > MAX_ARCHIVE_MEMBERS:
+            raise PbixError(
+                f"{source_name} contains too many archive members: {len(infos)} "
+                f"(limit {MAX_ARCHIVE_MEMBERS})"
+            )
+        names = {info.filename for info in infos}
         if LAYOUT_PART not in names:
             raise PbixError(
                 f"{source_name} has no {LAYOUT_PART} part; it does not look like a PBIX/PBIT report"
@@ -253,9 +284,11 @@ def read_pbix(source: Union[str, Path, BinaryIO]) -> PbixReport:
 
         report = PbixReport(source_name=source_name)
         if VERSION_PART in names:
-            report.version = _decode_text(archive.read(VERSION_PART)).strip()
+            report.version = _decode_text(
+                _read_part(archive, VERSION_PART, MAX_VERSION_BYTES)
+            ).strip()
 
-        layout_text = _decode_text(archive.read(LAYOUT_PART))
+        layout_text = _decode_text(_read_part(archive, LAYOUT_PART, MAX_LAYOUT_BYTES))
         try:
             layout = json.loads(layout_text)
         except ValueError as exc:
@@ -264,15 +297,19 @@ def read_pbix(source: Union[str, Path, BinaryIO]) -> PbixReport:
         sections = layout.get("sections") if isinstance(layout, dict) else None
         if isinstance(sections, list):
             report.pages = [
-                _parse_page(section, i) for i, section in enumerate(sections) if isinstance(section, dict)
+                _parse_page(section, i)
+                for i, section in enumerate(sections)
+                if isinstance(section, dict)
             ]
             report.pages.sort(key=lambda p: p.ordinal)
 
         if SCHEMA_PART in names:
-            report.tables = _parse_tables(_decode_text(archive.read(SCHEMA_PART)))
+            report.tables = _parse_tables(
+                _decode_text(_read_part(archive, SCHEMA_PART, MAX_SCHEMA_BYTES))
+            )
 
         report.static_resources = sorted(
-            name[len(STATIC_RESOURCE_PREFIX):]
+            name[len(STATIC_RESOURCE_PREFIX) :]
             for name in names
             if name.startswith(STATIC_RESOURCE_PREFIX) and not name.endswith("/")
         )
