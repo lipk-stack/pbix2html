@@ -28,6 +28,14 @@ jobs:
       - name: Run unit tests
         run: python -m unittest discover -v
 
+      - name: Syntax-check embedded browser runtime
+        run: |
+          python - <<'PY'
+          from pbix2html.render import _JS
+          open('runtime.js', 'w', encoding='utf-8').write(_JS)
+          PY
+          node --check runtime.js
+
       - name: CLI smoke test
         run: |
           python - <<'PY'
@@ -36,3 +44,7 @@ jobs:
           PY
           python -m pbix2html smoke.pbix -o smoke.html
           grep -q '<!DOCTYPE html>' smoke.html
+          grep -q 'class="page-tabs"' smoke.html
+          grep -q 'Layout-only compatibility mode' smoke.html
+          grep -q '<script>' smoke.html
+          ! grep -Eiq '(src|href)=["'"']https?://' smoke.html
