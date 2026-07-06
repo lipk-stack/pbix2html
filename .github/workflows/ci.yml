@@ -43,8 +43,16 @@ jobs:
           open('smoke.pbix', 'wb').write(build_pbix().getvalue())
           PY
           python -m pbix2html smoke.pbix -o smoke.html
-          grep -q '<!DOCTYPE html>' smoke.html
-          grep -q 'class="page-tabs"' smoke.html
-          grep -q 'Layout-only compatibility mode' smoke.html
-          grep -q '<script>' smoke.html
-          ! grep -Eiq '(src|href)=["'"']https?://' smoke.html
+          python - <<'PY'
+          from pathlib import Path
+          output = Path('smoke.html').read_text(encoding='utf-8')
+          assert output.startswith('<!DOCTYPE html>')
+          assert 'class="page-tabs"' in output
+          assert 'Layout-only compatibility mode' in output
+          assert '<script>' in output
+          lower = output.lower()
+          assert 'src="http://' not in lower
+          assert 'src="https://' not in lower
+          assert 'href="http://' not in lower
+          assert 'href="https://' not in lower
+          PY
