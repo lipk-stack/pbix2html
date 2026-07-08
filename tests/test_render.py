@@ -105,6 +105,22 @@ class RenderHtmlTests(unittest.TestCase):
         self.assertIn("Layout-only compatibility mode", html)
         self.assertIn("no portable row data", html)
 
+    def test_fidelity_report_section_is_rendered(self):
+        html = self.render(
+            sections=[section(visuals=[visual_container("barChart", name="v1")])]
+        )
+        self.assertIn("Conversion fidelity report", html)
+        self.assertIn("fidelity-EXACT", html)
+        self.assertIn("fidelity-VISUALLY_EQUIVALENT", html)
+        self.assertIn("barChart", html)
+
+    def test_unsupported_visual_type_is_flagged_in_fidelity_report(self):
+        html = self.render(
+            sections=[section(visuals=[visual_container("acmeCustomSankey", name="v1")])]
+        )
+        self.assertIn("fidelity-UNSUPPORTED", html)
+        self.assertIn("acmeCustomSankey", html)
+
 
 if __name__ == "__main__":
     unittest.main()
