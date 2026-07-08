@@ -42,6 +42,19 @@ class CliTests(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertTrue(target.is_file())
 
+    def test_fidelity_report_is_written_as_json(self):
+        import json
+
+        sample = self.write_sample()
+        report_path = self.tmp / "fidelity.json"
+        code, out, err = self.run_cli(str(sample), "--fidelity-report", str(report_path))
+        self.assertEqual(code, 0, err)
+        self.assertTrue(report_path.is_file())
+        payload = json.loads(report_path.read_text(encoding="utf-8"))
+        self.assertIn("reportDimensions", payload)
+        self.assertIn("visualFamilies", payload)
+        self.assertIn("Fidelity:", out)
+
     def test_missing_file_returns_2(self):
         code, _, err = self.run_cli(str(self.tmp / "nope.pbix"))
         self.assertEqual(code, 2)

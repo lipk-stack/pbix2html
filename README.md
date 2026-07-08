@@ -3,7 +3,8 @@
 Convert Power BI `.pbix` / `.pbit` files into standalone HTML documents that
 show the report's structure: every page rendered as a positioned wireframe of
 its visuals (type, title, bound fields), plus the data model tables (for
-`.pbit` templates) and registered static resources.
+`.pbit` templates), registered static resources, and an explicit fidelity
+report classifying what was and wasn't preserved.
 
 Uses only the Python standard library — no dependencies to install.
 
@@ -15,6 +16,9 @@ python -m pbix2html report.pbix
 
 # Choose the output path
 python -m pbix2html report.pbix -o out/report.html
+
+# Also write a machine-readable fidelity report
+python -m pbix2html report.pbix --fidelity-report report.fidelity.json
 ```
 
 Or install it as a command:
@@ -23,6 +27,18 @@ Or install it as a command:
 pip install .
 pbix2html report.pbix
 ```
+
+## Fidelity report
+
+pbix2html never claims a feature was converted when it wasn't. Every output
+includes a "Conversion fidelity report" section (and, with
+`--fidelity-report`, a JSON file — see `pbix2html/fidelity.py`) classifying
+each visual family and each report-wide feature (layout, navigation, semantic
+model metadata, DAX, filters, cross-filtering, bookmarks, theming, static
+resources, row-level security) as one of: `EXACT`, `SEMANTICALLY_EQUIVALENT`,
+`VISUALLY_EQUIVALENT`, `APPROXIMATED`, `SNAPSHOTTED`,
+`CONNECTED_RUNTIME_REQUIRED`, `UNSUPPORTED`, `BLOCKED_FOR_SECURITY`, or
+`BLOCKED_FOR_LICENSING`, with a plain-language reason for each.
 
 ## What gets extracted
 

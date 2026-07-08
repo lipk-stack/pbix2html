@@ -10,6 +10,7 @@ from __future__ import annotations
 import html
 from datetime import datetime, timezone
 
+from pbix2html.fidelity import FidelityReport, build_fidelity_report
 from pbix2html.reader import Page, PbixReport, Visual
 
 _CSS = r"""
@@ -93,6 +94,17 @@ main { max-width: 1600px; margin: 0 auto; padding: 1rem; }
 table { border-collapse: collapse; width: 100%; font-size: .82rem; }
 th, td { text-align: left; padding: .4rem .6rem; border-bottom: 1px solid var(--line); vertical-align: top; }
 th { background: var(--panel-2); }
+.fidelity-pill { display: inline-block; font-size: .72rem; font-weight: 600; padding: .1rem .5rem; border-radius: 999px; white-space: nowrap; }
+.fidelity-EXACT, .fidelity-SEMANTICALLY_EQUIVALENT { background: #dcfce7; color: #14532d; }
+.fidelity-VISUALLY_EQUIVALENT, .fidelity-APPROXIMATED, .fidelity-SNAPSHOTTED { background: #fef9c3; color: #713f12; }
+.fidelity-UNSUPPORTED, .fidelity-CONNECTED_RUNTIME_REQUIRED { background: #fee2e2; color: #7f1d1d; }
+.fidelity-BLOCKED_FOR_SECURITY, .fidelity-BLOCKED_FOR_LICENSING { background: #e0e7ff; color: #312e81; }
+@media (prefers-color-scheme: dark) {
+  .fidelity-EXACT, .fidelity-SEMANTICALLY_EQUIVALENT { background: #14532d; color: #dcfce7; }
+  .fidelity-VISUALLY_EQUIVALENT, .fidelity-APPROXIMATED, .fidelity-SNAPSHOTTED { background: #713f12; color: #fef9c3; }
+  .fidelity-UNSUPPORTED, .fidelity-CONNECTED_RUNTIME_REQUIRED { background: #7f1d1d; color: #fee2e2; }
+  .fidelity-BLOCKED_FOR_SECURITY, .fidelity-BLOCKED_FOR_LICENSING { background: #312e81; color: #e0e7ff; }
+}
 footer { max-width: 1600px; margin: 0 auto; padding: 1rem; color: var(--muted); font-size: .74rem; }
 @media (prefers-color-scheme: dark) {
   :root { --bg: #111827; --panel: #1f2937; --panel-2: #273449; --text: #f3f4f6; --muted: #a7b0c0; --line: #3b475a; --accent: #3b82f6; --warn-bg: #3b2415; --warn-line: #9a5b28; --warn-text: #fed7aa; --shadow: 0 10px 30px rgba(0, 0, 0, .28); }
@@ -277,6 +289,44 @@ def _render_tables(report: PbixReport) -> str:
     )
 
 
+def _pill(classification: str) -> str:
+    return f'<span class="fidelity-pill fidelity-{_esc(classification)}">{_esc(classification)}</span>'
+
+
+def _render_fidelity_report(fidelity: FidelityReport) -> str:
+    dimension_rows = "".join(
+        f"<tr><td>{_esc(d.label)}</td><td>{_pill(d.classification)}</td><td>{_esc(d.reason)}</td></tr>"
+        for d in fidelity.dimensions
+    )
+    if fidelity.visuals:
+        visual_rows = "".join(
+            f"<tr><td>{_esc(v.visual_type)}</td><td>{_pill(v.classification)}</td>"
+            f"<td>{v.count}</td><td>{_esc(v.reason)}</td></tr>"
+            for v in fidelity.visuals
+        )
+        visual_table = (
+            "<table><thead><tr><th>Visual type</th><th>Classification</th><th>Count</th>"
+            f"<th>Reason</th></tr></thead><tbody>{visual_rows}</tbody></table>"
+        )
+    else:
+        visual_table = "<p>No rendered visuals to classify.</p>"
+    not_rendered = ""
+    if fidelity.hidden_visual_count or fidelity.hidden_page_count:
+        not_rendered = (
+            f"<p>Not rendered at all: <strong>{fidelity.hidden_visual_count}</strong> hidden visual(s), "
+            f"<strong>{fidelity.hidden_page_count}</strong> hidden page(s).</p>"
+        )
+    return (
+        '<section class="card-section"><h2>Conversion fidelity report</h2><div class="card">'
+        "<h3>Report-wide features</h3>"
+        f"<table><thead><tr><th>Feature</th><th>Classification</th><th>Reason</th></tr></thead>"
+        f"<tbody>{dimension_rows}</tbody></table>"
+        "<h3>Visual families</h3>"
+        f"{visual_table}{not_rendered}"
+        "</div></section>"
+    )
+
+
 def _render_resources(report: PbixReport) -> str:
     if not report.static_resources:
         return ""
@@ -284,8 +334,10 @@ def _render_resources(report: PbixReport) -> str:
     return '<section class="card-section"><h2>Static resources</h2>' f'<div class="card"><ul>{items}</ul></div></section>'
 
 
-def render_html(report: PbixReport) -> str:
+def render_html(report: PbixReport, fidelity: FidelityReport | None = None) -> str:
     """Return a complete, self-contained interactive HTML document."""
+    if fidelity is None:
+        fidelity = build_fidelity_report(report)
     generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     version = f" · layout version {_esc(report.version)}" if report.version else ""
     page_ids = [_slug(page.display_name, i) for i, page in enumerate(report.pages)]
@@ -315,7 +367,7 @@ def render_html(report: PbixReport) -> str:
         pages = "".join(_render_page(page, page_ids[i], i == first_visible) for i, page in enumerate(report.pages))
     else:
         pages = '<div class="card">No report pages found.</div>'
-    fidelity = (
+    fidelity_banner = (
         '<aside class="fidelity-banner" role="status"><strong>Layout-only compatibility mode</strong>'
         "This PBIX exposed report layout metadata but no portable row data. Page switching works offline, "
         "but chart values, slicer choices, cross-filtering, and measure results cannot be reconstructed from layout metadata alone."
@@ -329,7 +381,8 @@ def render_html(report: PbixReport) -> str:
         f"<h1>{_esc(report.source_name)}</h1><p class=\"subtitle\">Portable Power BI layout{version}</p>"
         f'</div>{summary}</div><nav class="page-tabs" role="tablist" aria-label="Report pages">{"".join(tabs)}{hidden_toggle}</nav>'
         "</div></header>"
-        f"<main>{fidelity}{pages}{_render_tables(report)}{_render_resources(report)}</main>"
+        f"<main>{fidelity_banner}{pages}{_render_tables(report)}{_render_resources(report)}"
+        f"{_render_fidelity_report(fidelity)}</main>"
         f"<footer>Generated by pbix2html on {generated}. No external runtime dependencies.</footer><script>{_JS}</script>"
         "</body></html>\n"
     )
