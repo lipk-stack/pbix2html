@@ -54,6 +54,57 @@ class RenderHtmlTests(unittest.TestCase):
         self.assertIn("Sales", html)
         self.assertIn("Amount", html)
 
+    def test_measure_expression_rendered_and_escaped(self):
+        html = self.render(
+            schema={
+                "model": {
+                    "tables": [
+                        {
+                            "name": "Sales",
+                            "measures": [
+                                {
+                                    "name": "Bad<Name>",
+                                    "expression": "SUM(Sales[Amount]) // <script>alert(1)</script>",
+                                }
+                            ],
+                        }
+                    ]
+                }
+            }
+        )
+        self.assertIn('class="measure-expr"', html)
+        self.assertIn("SUM(Sales[Amount])", html)
+        self.assertNotIn("<script>alert", html)
+        self.assertIn("&lt;Name&gt;", html)
+
+    def test_relationships_rendered(self):
+        html = self.render(
+            schema={
+                "model": {
+                    "tables": [{"name": "Sales"}, {"name": "Product"}],
+                    "relationships": [
+                        {
+                            "fromTable": "Sales",
+                            "fromColumn": "ProductKey",
+                            "toTable": "Product",
+                            "toColumn": "ProductKey",
+                            "crossFilteringBehavior": "BothDirections",
+                            "isActive": False,
+                        }
+                    ],
+                }
+            }
+        )
+        self.assertIn("Relationships", html)
+        self.assertIn("Sales.ProductKey", html)
+        self.assertIn("Product.ProductKey", html)
+        self.assertIn("Both directions", html)
+        self.assertIn("inactive", html)
+
+    def test_no_relationships_section_when_absent(self):
+        html = self.render()
+        self.assertNotIn("<h2>Relationships</h2>", html)
+
     def test_empty_report_renders_placeholder(self):
         html = self.render(sections=[])
         self.assertIn("No report pages found.", html)

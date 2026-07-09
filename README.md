@@ -32,12 +32,17 @@ A PBIX file is a ZIP archive. pbix2html reads:
 | --- | --- |
 | `Report/Layout` | Pages, visual positions, visual types, titles, field bindings |
 | `Version` | Layout format version |
-| `DataModelSchema` | Tables, columns, measures (present in `.pbit` templates) |
+| `DataModelSchema` | Tables, columns, measures (with DAX expression text), relationships (present in `.pbit` templates) |
 | `Report/StaticResources/` | Names of registered images/themes |
 
 The binary `DataModel` blob inside `.pbix` files uses a proprietary
 compression (XPress9) and is intentionally not parsed; save your report as a
 `.pbit` template if you want the data model section populated.
+
+Measure DAX expressions are extracted and displayed as source text only —
+they are never parsed or evaluated, so no calculated values are shown.
+Relationships list each table pair, cardinality column, cross-filter
+direction, and active/inactive status straight from the schema.
 
 ## Development
 

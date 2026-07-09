@@ -71,7 +71,9 @@ class ReadPbixTests(unittest.TestCase):
                     {
                         "name": "Sales",
                         "columns": [{"name": "Amount"}, {"name": "Date"}],
-                        "measures": [{"name": "Total Sales"}],
+                        "measures": [
+                            {"name": "Total Sales", "expression": "SUM(Sales[Amount])"}
+                        ],
                     },
                     {"name": "LocalDateTable_abc", "columns": [{"name": "Date"}]},
                 ]
@@ -81,7 +83,76 @@ class ReadPbixTests(unittest.TestCase):
         self.assertEqual(len(report.tables), 1)
         self.assertEqual(report.tables[0].name, "Sales")
         self.assertEqual(report.tables[0].columns, ["Amount", "Date"])
-        self.assertEqual(report.tables[0].measures, ["Total Sales"])
+        self.assertEqual(len(report.tables[0].measures), 1)
+        measure = report.tables[0].measures[0]
+        self.assertEqual(measure.name, "Total Sales")
+        self.assertEqual(measure.expression, "SUM(Sales[Amount])")
+
+    def test_measure_expression_as_line_array_is_joined(self):
+        schema = {
+            "model": {
+                "tables": [
+                    {
+                        "name": "Sales",
+                        "measures": [
+                            {
+                                "name": "Revenue YTD",
+                                "expression": [
+                                    "TOTALYTD(",
+                                    "    SUM(Sales[Amount]),",
+                                    "    'Date'[Date]",
+                                    ")",
+                                ],
+                            }
+                        ],
+                    }
+                ]
+            }
+        }
+        report = read_pbix(build_pbix(schema=schema))
+        measure = report.tables[0].measures[0]
+        self.assertEqual(
+            measure.expression, "TOTALYTD(\n    SUM(Sales[Amount]),\n    'Date'[Date]\n)"
+        )
+
+    def test_reads_relationships(self):
+        schema = {
+            "model": {
+                "tables": [{"name": "Sales"}, {"name": "Product"}],
+                "relationships": [
+                    {
+                        "fromTable": "Sales",
+                        "fromColumn": "ProductKey",
+                        "toTable": "Product",
+                        "toColumn": "ProductKey",
+                        "crossFilteringBehavior": "OneDirection",
+                    },
+                    {
+                        "fromTable": "Sales",
+                        "fromColumn": "PromoKey",
+                        "toTable": "Promo",
+                        "toColumn": "PromoKey",
+                        "crossFilteringBehavior": "BothDirections",
+                        "isActive": False,
+                    },
+                ],
+            }
+        }
+        report = read_pbix(build_pbix(schema=schema))
+        self.assertEqual(len(report.relationships), 2)
+        active = report.relationships[0]
+        self.assertEqual(active.from_table, "Sales")
+        self.assertEqual(active.to_table, "Product")
+        self.assertEqual(active.cross_filter_direction, "single")
+        self.assertTrue(active.active)
+        inactive = report.relationships[1]
+        self.assertEqual(inactive.cross_filter_direction, "both")
+        self.assertFalse(inactive.active)
+
+    def test_relationship_missing_endpoints_is_skipped(self):
+        schema = {"model": {"relationships": [{"fromTable": "Sales", "fromColumn": "Key"}]}}
+        report = read_pbix(build_pbix(schema=schema))
+        self.assertEqual(report.relationships, [])
 
     def test_lists_static_resources(self):
         report = read_pbix(build_pbix(static_resources={"RegisteredResources/logo.png": b"\x89PNG"}))
