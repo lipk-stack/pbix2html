@@ -61,12 +61,32 @@ class Page:
 
 
 @dataclass
+class Measure:
+    """A DAX measure. ``expression`` is the source text only; it is never evaluated."""
+
+    name: str
+    expression: str = ""
+
+
+@dataclass
 class Table:
     """A table from the data model schema, or a conservative binding skeleton."""
 
     name: str
     columns: list[str] = field(default_factory=list)
-    measures: list[str] = field(default_factory=list)
+    measures: list[Measure] = field(default_factory=list)
+
+
+@dataclass
+class Relationship:
+    """A relationship between two tables in the data model schema."""
+
+    from_table: str
+    from_column: str
+    to_table: str
+    to_column: str
+    cross_filter_direction: str = "single"  # "single" or "both"
+    active: bool = True
 
 
 @dataclass
@@ -77,6 +97,7 @@ class PbixReport:
     version: str = ""
     pages: list[Page] = field(default_factory=list)
     tables: list[Table] = field(default_factory=list)
+    relationships: list[Relationship] = field(default_factory=list)
     static_resources: list[str] = field(default_factory=list)
 
     @property
@@ -236,14 +257,51 @@ def _parse_page(section: dict, index: int) -> Page:
     return page
 
 
-def _parse_tables(schema_text: str) -> list[Table]:
+def _dax_expression_text(value: Any) -> str:
+    """DAX expressions in DataModelSchema are a string or a list of source lines."""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        return "\n".join(str(line) for line in value).strip()
+    return ""
+
+
+_CROSS_FILTER_BOTH = {"bothdirections", "automatic"}
+
+
+def _parse_relationships(model: dict) -> list[Relationship]:
+    relationships: list[Relationship] = []
+    for entry in model.get("relationships", []) if isinstance(model, dict) else []:
+        if not isinstance(entry, dict):
+            continue
+        from_table, from_column = str(entry.get("fromTable", "")), str(entry.get("fromColumn", ""))
+        to_table, to_column = str(entry.get("toTable", "")), str(entry.get("toColumn", ""))
+        if not (from_table and from_column and to_table and to_column):
+            continue
+        behavior = str(entry.get("crossFilteringBehavior", "")).lower()
+        relationships.append(
+            Relationship(
+                from_table=from_table,
+                from_column=from_column,
+                to_table=to_table,
+                to_column=to_column,
+                cross_filter_direction="both" if behavior in _CROSS_FILTER_BOTH else "single",
+                active=bool(entry.get("isActive", True)),
+            )
+        )
+    return relationships
+
+
+def _parse_schema(schema_text: str) -> tuple[list[Table], list[Relationship]]:
     try:
         schema = json.loads(schema_text)
     except ValueError:
-        return []
+        return [], []
     model = schema.get("model", {}) if isinstance(schema, dict) else {}
+    if not isinstance(model, dict):
+        return [], []
     tables: list[Table] = []
-    for entry in model.get("tables", []) if isinstance(model, dict) else []:
+    for entry in model.get("tables", []) or []:
         if not isinstance(entry, dict):
             continue
         name = str(entry.get("name", ""))
@@ -255,9 +313,14 @@ def _parse_tables(schema_text: str) -> list[Table]:
                 table.columns.append(str(column["name"]))
         for measure in entry.get("measures", []) or []:
             if isinstance(measure, dict) and measure.get("name"):
-                table.measures.append(str(measure["name"]))
+                table.measures.append(
+                    Measure(
+                        name=str(measure["name"]),
+                        expression=_dax_expression_text(measure.get("expression")),
+                    )
+                )
         tables.append(table)
-    return tables
+    return tables, _parse_relationships(model)
 
 
 _WRAPPER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\((.*)\)$")
@@ -301,7 +364,8 @@ def _augment_tables_from_bindings(tables: list[Table], pages: list[Page]) -> lis
                     table = Table(name=table_name)
                     by_name[table_name] = table
                     order.append(table_name)
-                if column_name not in table.columns and column_name not in table.measures:
+                measure_names = {measure.name for measure in table.measures}
+                if column_name not in table.columns and column_name not in measure_names:
                     table.columns.append(column_name)
     return [by_name[name] for name in order]
 
@@ -351,7 +415,7 @@ def read_pbix(source: Union[str, Path, BinaryIO]) -> PbixReport:
             report.pages.sort(key=lambda p: p.ordinal)
 
         if SCHEMA_PART in names:
-            report.tables = _parse_tables(
+            report.tables, report.relationships = _parse_schema(
                 _decode_text(_read_part(archive, SCHEMA_PART, MAX_SCHEMA_BYTES))
             )
         report.tables = _augment_tables_from_bindings(report.tables, report.pages)
